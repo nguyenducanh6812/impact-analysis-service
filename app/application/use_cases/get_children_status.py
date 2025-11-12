@@ -83,17 +83,25 @@ class GetChildrenStatusUseCase:
         """
         Recursively get children and their descendants.
 
+        This method follows only the primary hierarchical relationships:
+        - LINE -[:HAS_ISO]-> ISO
+        - ISO -[:FABRICATED_AS]-> SPOOL
+        - SPOOL -[:GROUPS]-> Part
+
+        It explicitly excludes ISO -[:HAS_PART]-> Part to avoid duplication,
+        since Parts should only appear under their parent SPOOLs.
+
         Args:
             parent_id: Parent entity ID
 
         Returns:
             List of child nodes with their recursive children
         """
-        # Query: Get direct children with their labels
+        # Query: Get direct children with their labels and relationship types
         result = await self.graph_repo.client.execute_query(
             """
             MATCH (parent {id: $parent_id})-[r]->(child)
-            RETURN child, labels(child) as child_labels
+            RETURN child, labels(child) as child_labels, type(r) as relationship_type
             ORDER BY child.id
             """,
             {"parent_id": parent_id}
@@ -105,6 +113,13 @@ class GetChildrenStatusUseCase:
             child_labels = record["child_labels"]
             child_type = child_labels[0] if child_labels else "Unknown"
             child_id = child.get("id", "unknown")
+            relationship_type = record["relationship_type"]
+
+            # Filter relationships to follow only the hierarchical path
+            # Skip ISO -> Part relationships (they should appear under SPOOLs)
+            if relationship_type == "HAS_PART" and child_type == "Part":
+                log.debug(f"Skipping direct ISO->Part relationship for {child_id} to avoid duplication")
+                continue
 
             # Recursively get children of this child
             grandchildren = await self._get_children_recursive(child_id)
